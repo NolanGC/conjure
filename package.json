@@ -12,6 +12,7 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "@convex-dev/auth": "^0.0.87",
     "@xyflow/react": "^12.8.2",
     "convex": "^1.25.2",
     "next": "15.3.5",
