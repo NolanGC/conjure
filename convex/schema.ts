@@ -15,8 +15,11 @@ export default defineSchema({
     status: v.string(),
     progress: v.number(),
     idempotency_key: v.optional(v.string()),
+    user_id: v.optional(v.string()),
     createdAt: v.number(),
     updatedAt: v.number(),
-  }).index("by_idempotency_key", ["idempotency_key"]),
+  })
+    .index("by_idempotency_key", ["idempotency_key"])
+    .index("by_user_id", ["user_id"]),
 });
 

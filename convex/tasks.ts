@@ -1,21 +1,43 @@
 import { v } from "convex/values";
 import { mutation, action, internalAction, internalMutation, query } from "./_generated/server";
 import { internal } from "./_generated/api";
+import { getAuthUserId } from "@convex-dev/auth/server";
 
 export const get = query({
   args: {},
   handler: async (ctx) => {
-    return await ctx.db.query("tasks").order("desc").collect();
+    const userId = await getAuthUserId(ctx);
+    if (!userId) {
+      return [];
+    }
+    
+    return await ctx.db
+      .query("tasks")
+      .withIndex("by_user_id", (q) => q.eq("user_id", userId))
+      .order("desc")
+      .collect();
   },
 });
 
+// Query to get a specific task (only if user owns it)
 export const getTask = query({
   args: { taskId: v.id("tasks") },
   handler: async (ctx, args) => {
-    return await ctx.db.get(args.taskId);
+    const userId = await getAuthUserId(ctx);
+    if (!userId) {
+      return null;
+    }
+    
+    const task = await ctx.db.get(args.taskId);
+    if (!task || task.user_id !== userId) {
+      return null;
+    }
+    
+    return task;
   },
 });
 
+// Mutation to create a new task (authenticated)
 export const createTask = mutation({
   args: {
     name: v.string(),
@@ -23,12 +45,17 @@ export const createTask = mutation({
     idempotency_key: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) {
+      throw new Error("Authentication required");
+    }
     if (args.idempotency_key) {
       const existingTask = await ctx.db
         .query("tasks")
         .withIndex("by_idempotency_key", (q) => 
           q.eq("idempotency_key", args.idempotency_key)
         )
+        .filter((q) => q.eq(q.field("user_id"), userId))
         .first();
       
       if (existingTask) {
@@ -44,6 +71,7 @@ export const createTask = mutation({
       status: "INITIATED",
       progress: 0,
       idempotency_key: args.idempotency_key,
+      user_id: userId,
       createdAt: Date.now(),
       updatedAt: Date.now(),
     });

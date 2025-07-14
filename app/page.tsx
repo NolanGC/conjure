@@ -21,7 +21,6 @@ export default function App() {
   const [isCreating, setIsCreating] = useState(false);
   const [createdTaskId, setCreatedTaskId] = useState<Id<"tasks"> | undefined>(undefined);
  
-  // Convex hooks
   const createTask = useMutation(api.tasks.createTask);
   const tasks = useQuery(api.tasks.get);
   const currentTask = useQuery(api.tasks.getTask, 
@@ -40,7 +39,6 @@ export default function App() {
     (params: Connection) => setEdges((edgesSnapshot) => addEdge(params, edgesSnapshot)),
     [],
   );
-
 
   const handleCreateTask = async () => {
     if (!taskName.trim()) return;
@@ -70,7 +68,7 @@ export default function App() {
   };
  
   return (
-    <div style={{ width: '100vw', height: '100vh', display: 'flex' }}>
+    <div style={{ width: '100vw', height: 'calc(100vh - 80px)', display: 'flex' }}>
       <div style={{ width: '50%', height: '100%' }}>
         <ReactFlow
           nodes={nodes}
@@ -83,6 +81,7 @@ export default function App() {
       </div>
       <div style={{ width: '50%', height: '100%', padding: '20px', overflowY: 'auto' }}>
         <h2>Task Creator</h2>
+        
         <div style={{ marginBottom: '20px' }}>
           <input
             type="text"
@@ -122,7 +121,7 @@ export default function App() {
 
         {tasks && tasks.length > 0 && (
           <div>
-            <h3>All Tasks:</h3>
+            <h3>Your Tasks:</h3>
             <div style={{ maxHeight: '200px', overflowY: 'auto' }}>
               {tasks.map((task) => (
                 <div key={task._id} style={{ padding: '8px', border: '1px solid #ddd', marginBottom: '8px', borderRadius: '4px' }}>
