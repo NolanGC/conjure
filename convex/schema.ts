@@ -21,5 +21,15 @@ export default defineSchema({
   })
     .index("by_idempotency_key", ["idempotency_key"])
     .index("by_user_id", ["user_id"]),
+  
+  video_generations: defineTable({
+    taskId: v.id("tasks"),
+    storageId: v.id("_storage"),
+    user_id: v.string(),
+    createdAt: v.number(),
+    metadata: v.optional(v.any()),
+  })
+    .index("by_task", ["taskId"])
+    .index("by_user", ["user_id"]),
 });
 

@@ -2,6 +2,13 @@ import { v } from "convex/values";
 import { mutation, action, internalAction, internalMutation, query } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { getAuthUserId } from "@convex-dev/auth/server";
+import Replicate, { type Prediction } from 'replicate';
+import { type TaskType, type ReplicateModel } from "../types";
+
+const TASK_TYPE_TO_ACTION : Record<TaskType, any> = {
+  "timer": internal.tasks.runTimerAction,
+  "replicate": internal.tasks.runReplicateAction,
+};
 
 export const get = query({
   args: {},
@@ -37,12 +44,53 @@ export const getTask = query({
   },
 });
 
+// Query to get generations for a user
+export const getGenerations = query({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) {
+      return [];
+    }
+    
+    return await ctx.db
+      .query("video_generations")
+      .withIndex("by_user", (q) => q.eq("user_id", userId))
+      .order("desc")
+      .collect();
+  },
+});
+
+// Query to get generation by task ID
+export const getGenerationByTask = query({
+  args: { taskId: v.id("tasks") },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) {
+      return null;
+    }
+    
+    const generation = await ctx.db
+      .query("video_generations")
+      .withIndex("by_task", (q) => q.eq("taskId", args.taskId))
+      .first();
+    
+    if (!generation || generation.user_id !== userId) {
+      return null;
+    }
+    
+    return generation;
+  },
+});
+
 // Mutation to create a new task (authenticated)
 export const createTask = mutation({
   args: {
     name: v.string(),
     description: v.string(),
     idempotency_key: v.optional(v.string()),
+    type: v.string(),
+    task_args: v.optional(v.any()), // TODO? smart way to type this?
   },
   handler: async (ctx, args) => {
     const userId = await getAuthUserId(ctx);
@@ -66,7 +114,7 @@ export const createTask = mutation({
 
     const taskId = await ctx.db.insert("tasks", {
       name: args.name,
-      type: "timer",
+      type: args.type,
       description: args.description,
       status: "INITIATED",
       progress: 0,
@@ -76,17 +124,54 @@ export const createTask = mutation({
       updatedAt: Date.now(),
     });
 
-    await ctx.scheduler.runAfter(0, internal.tasks.runTimerAction, {
-      taskId: taskId,
-    });
+    const action = TASK_TYPE_TO_ACTION[args.type as TaskType];
+    if (action) {
+      await ctx.scheduler.runAfter(0, action, {
+        taskId: taskId,
+        taskArgs: args.task_args || undefined,
+      });
+    }
 
     return taskId;
   },
 });
 
+export const updateTaskStatus = internalMutation({
+  args: {
+    taskId: v.id("tasks"),
+    status: v.string(),
+    progress: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    await ctx.db.patch(args.taskId, {
+      status: args.status,
+      progress: args.progress ?? 0,
+      updatedAt: Date.now(),
+    });
+  },
+});
+
+export const updateTaskProgress = internalMutation({
+  args: {
+    taskId: v.id("tasks"),
+    progress: v.number(),
+  },
+  handler: async (ctx, args) => {
+    await ctx.db.patch(args.taskId, {
+      progress: args.progress,
+      updatedAt: Date.now(),
+    });
+  },
+});
+
+// ================================================
+// TASK ACTIONS
+// ================================================
+
 export const runTimerAction = internalAction({
   args: {
     taskId: v.id("tasks"),
+    taskArgs: v.optional(v.any()),
   },
   handler: async (ctx, args) => {
     console.log(`Starting timer action for task: ${args.taskId}`);
@@ -119,30 +204,109 @@ export const runTimerAction = internalAction({
   },
 });
 
-export const updateTaskStatus = internalMutation({
+// TODO, types are weird here. We take an any type and pass it to this action which imposes opinions.
+// maybe ok?
+export const runReplicateAction = internalAction({
   args: {
     taskId: v.id("tasks"),
-    status: v.string(),
-    progress: v.optional(v.number()),
+    taskArgs: v.object({
+      model: v.string(),
+      input: v.object({
+        prompt: v.string(),
+      }),
+    }),
   },
   handler: async (ctx, args) => {
-    await ctx.db.patch(args.taskId, {
-      status: args.status,
-      progress: args.progress ?? 0,
-      updatedAt: Date.now(),
+    console.log(`Starting replicate action for task: ${args.taskId}`);
+    
+    await ctx.runMutation(internal.tasks.updateTaskStatus, {
+      taskId: args.taskId,
+      status: "RUNNING",
+      progress: 0,
+    });
+
+    try {
+      const replicate = new Replicate();
+      const onProgress = (prediction: Prediction) => {
+        console.log({ prediction });
+      };
+      
+      const output = await replicate.run(args.taskArgs.model as ReplicateModel, { input: args.taskArgs.input }, onProgress);
+      console.log("OUTPUT", { output });
+      
+      if (output) {
+        const videoUrl = output.toString();
+        console.log("Video URL:", videoUrl);
+        
+        const response = await fetch(videoUrl);
+        if (!response.ok) {
+          throw new Error(`Failed to fetch video: ${response.status}`);
+        }
+        const videoBlob = await response.blob();
+        const storageId = await ctx.storage.store(videoBlob);
+
+        await ctx.runMutation(internal.tasks.createGeneration, {
+          taskId: args.taskId,
+          storageId: storageId,
+          metadata: {
+            model: args.taskArgs.model,
+            input: args.taskArgs.input,
+            originalUrl: videoUrl,
+          },
+        });
+        
+        await ctx.runMutation(internal.tasks.updateTaskStatus, {
+          taskId: args.taskId,
+          status: "COMPLETED",
+          progress: 100,
+        });
+        console.log(`Video stored with ID: ${storageId}`);
+      } else {
+        throw new Error("No video output received from Replicate");
+      }
+    } catch (error) {
+      console.error("Replicate action failed:", error);
+      await ctx.runMutation(internal.tasks.updateTaskStatus, {
+        taskId: args.taskId,
+        status: "FAILED",
+        progress: -1,
+      });
+    }
+  },
+});
+
+export const createGeneration = internalMutation({
+  args: {
+    taskId: v.id("tasks"),
+    storageId: v.id("_storage"),
+    metadata: v.optional(v.any()),
+  },
+  handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) {
+      throw new Error("Authentication required");
+    }
+    const task = await ctx.db.get(args.taskId);
+    if (!task) {
+      throw new Error("Task not found");
+    }
+    
+    await ctx.db.insert("video_generations", {
+      taskId: args.taskId,
+      storageId: args.storageId,
+      metadata: args.metadata,
+      user_id: userId,
+      createdAt: Date.now(),
     });
   },
 });
 
-export const updateTaskProgress = internalMutation({
+export const getVideoUrl = query({
   args: {
-    taskId: v.id("tasks"),
-    progress: v.number(),
+    storageId: v.id("_storage"),
   },
   handler: async (ctx, args) => {
-    await ctx.db.patch(args.taskId, {
-      progress: args.progress,
-      updatedAt: Date.now(),
-    });
+    const videoUrl = await ctx.storage.getUrl(args.storageId);
+    return videoUrl;
   },
 });
