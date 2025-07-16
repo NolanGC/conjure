@@ -72,7 +72,7 @@ export const getGenerationByTask = query({
     
     const generation = await ctx.db
       .query("video_generations")
-      .withIndex("by_task", (q) => q.eq("taskId", args.taskId))
+      .withIndex("by_task", (q) => q.eq("task_id", args.taskId))
       .first();
     
     if (!generation || generation.user_id !== userId) {
@@ -119,9 +119,10 @@ export const createTask = mutation({
       status: "INITIATED",
       progress: 0,
       idempotency_key: args.idempotency_key,
+      task_cost: 0, // TODO: calculate actual cost
       user_id: userId,
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
+      created_at: Date.now(),
+      updated_at: Date.now(),
     });
 
     const action = TASK_TYPE_TO_ACTION[args.type as TaskType];
@@ -146,7 +147,7 @@ export const updateTaskStatus = internalMutation({
     await ctx.db.patch(args.taskId, {
       status: args.status,
       progress: args.progress ?? 0,
-      updatedAt: Date.now(),
+      updated_at: Date.now(),
     });
   },
 });
@@ -159,7 +160,7 @@ export const updateTaskProgress = internalMutation({
   handler: async (ctx, args) => {
     await ctx.db.patch(args.taskId, {
       progress: args.progress,
-      updatedAt: Date.now(),
+      updated_at: Date.now(),
     });
   },
 });
@@ -292,11 +293,11 @@ export const createGeneration = internalMutation({
     }
     
     await ctx.db.insert("video_generations", {
-      taskId: args.taskId,
-      storageId: args.storageId,
+      task_id: args.taskId,
+      storage_id: args.storageId,
       metadata: args.metadata,
       user_id: userId,
-      createdAt: Date.now(),
+      created_at: Date.now(),
     });
   },
 });
